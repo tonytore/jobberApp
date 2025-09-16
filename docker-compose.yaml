@@ -1,0 +1,148 @@
+services:
+  redis:
+    container_name: redis_container
+    image: redis:alpine
+    restart: always
+    ports:
+      - "6380:6379" # Port changed to avoid conflict
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./docker-volumes/catch:/data
+      - redis_logs:/var/log/redis
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PROTECTED_MODE=no
+    networks:
+      - microservices-network
+  mongodb:
+    container_name: mongodb_container
+    image: mongo:latest
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./docker-volumes/mongo:/data/db
+  mysql:
+    container_name: mysql_container
+    image: mysql
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: api
+      MYSQL_DATABASE: jobber_auth
+      MYSQL_USER: jobber
+      MYSQL_PASSWORD: api
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./docker-volumes/mysql:/var/lib/mysql
+  postgres:
+    container_name: postgres_container
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: jobber
+      POSTGRES_PASSWORD: api
+      POSTGRES_DB: jobber_reviews
+    ports:
+      - "5438:5432"
+    volumes:
+      - ./docker-volumes/postgres:/var/lib/postgresql/data
+  rabbitmq:
+    container_name: rabbitmq_container
+    image: rabbitmq:4.2-rc-management-alpine
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - microservices-network
+  loki:
+    image: grafana/loki:latest
+    container_name: "loki"
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    command:
+      - -config.file=/etc/loki/local-config.yaml
+      - -pattern-ingester.enabled=true
+    volumes:
+      - loki_config:/etc/loki
+      - loki_data:/data/loki
+    networks:
+      - microservices-network
+  promtail:
+    image: grafana/promtail:latest
+    container_name: "promtail"
+    restart: unless-stopped
+    volumes:
+      - promtail_logs:/var/log
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - microservices-network
+  grafana:
+    image: grafana/grafana:latest
+    container_name: "grafana"
+    restart: unless-stopped
+    depends_on:
+      - loki
+      - promtail
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+        apiVersion: 1
+        datasources:
+        - name: Loki
+          type: loki
+          access: proxy
+          orgId: 1
+          url: http://loki:3100
+          basicAuth: false
+          isDefault: true
+          version: 1
+          editable: false
+        EOF
+        /run.sh
+    ports:
+      - "5601:3000"
+    volumes:
+      - grafana_config:/etc/grafana
+      - grafana_data:/var/lib/grafana
+    user: "472:472"
+    networks:
+      - microservices-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+
+networks:
+  microservices-network:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
+  rabbitmq_logs:
+  mysql_data:
+  mysql_config:
+  loki_config:
+  loki_data:
+  promtail_logs:
+  grafana_data:
+  grafana_config:
+  redis_data:
+  redis_logs:
