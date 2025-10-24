@@ -1,31 +1,37 @@
+version: "3.9"
+
 services:
+  # Redis + exporter
   redis:
     container_name: redis_container
     image: redis:alpine
     restart: always
     ports:
-      - "6380:6379" # Port changed to avoid conflict
+      - "6380:6379"
+    networks:
+      - microservices-network
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - ./docker-volumes/catch:/data
       - redis_logs:/var/log/redis
+  
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis_exporter
+    restart: always
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_PROTECTED_MODE=no
+    ports:
+      - "9121:9121"
     networks:
       - microservices-network
-  mongodb:
-    container_name: mongodb_container
-    image: mongo:latest
-    restart: always
-    ports:
-      - "27017:27017"
-    volumes:
-      - ./docker-volumes/mongo:/data/db
+    depends_on:
+      - redis
+
+  # MySQL + exporter
   mysql:
     container_name: mysql_container
-    image: mysql
-    command: --default-authentication-plugin=mysql_native_password
+    image: mysql:latest
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: api
@@ -36,9 +42,26 @@ services:
       - "3307:3306"
     volumes:
       - ./docker-volumes/mysql:/var/lib/mysql
+    networks:
+      - microservices-network
+
+  mysqld_exporter:
+    image: prom/mysqld-exporter:latest
+    container_name: mysqld_exporter
+    restart: always
+    environment:
+      DATA_SOURCE_NAME: "jobber:api@(mysql_container:3306)/"
+    ports:
+      - "9104:9104"
+    networks:
+      - microservices-network
+    depends_on:
+      - mysql
+
+  # PostgreSQL + exporter
   postgres:
     container_name: postgres_container
-    image: postgres
+    image: postgres:latest
     restart: always
     environment:
       POSTGRES_USER: jobber
@@ -48,32 +71,90 @@ services:
       - "5438:5432"
     volumes:
       - ./docker-volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - microservices-network
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres_exporter
+    restart: always
+    environment:
+      DATA_SOURCE_NAME: "postgresql://jobber:api@postgres_container:5432/jobber_reviews?sslmode=disable"
+    ports:
+      - "9187:9187"
+    networks:
+      - microservices-network
+    depends_on:
+      - postgres
+
+  # MongoDB + exporter
+  mongodb:
+    container_name: mongodb_container
+    image: mongo:latest
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./docker-volumes/mongo:/data/db
+    networks:
+      - microservices-network
+    
+
+  mongodb_exporter:
+    image: bitnami/mongodb-exporter:latest
+    container_name: mongodb_exporter
+    restart: always
+    environment:
+      MONGODB_URI: "mongodb://mongodb_container:27017"
+    ports:
+      - "9216:9216"
+    networks:
+      - microservices-network
+    depends_on:
+      - mongodb
+
+  # RabbitMQ + exporter
   rabbitmq:
     container_name: rabbitmq_container
-    image: rabbitmq:4.2-rc-management-alpine
+    image: rabbitmq:3-management-alpine
     restart: always
     ports:
       - "5672:5672"
       - "15672:15672"
     networks:
       - microservices-network
+
+  rabbitmq_exporter:
+    image: kbudde/rabbitmq-exporter:latest
+    container_name: rabbitmq_exporter
+    restart: always
+    environment:
+      RABBIT_URL: "http://rabbitmq:15672"
+    ports:
+      - "9419:9419"
+    networks:
+      - microservices-network
+    depends_on:
+      - rabbitmq
+
+  # Loki & Promtail
   loki:
     image: grafana/loki:latest
-    container_name: "loki"
+    container_name: loki
     restart: unless-stopped
     ports:
       - "3100:3100"
     command:
       - -config.file=/etc/loki/local-config.yaml
-      - -pattern-ingester.enabled=true
     volumes:
       - loki_config:/etc/loki
       - loki_data:/data/loki
     networks:
       - microservices-network
+
   promtail:
     image: grafana/promtail:latest
-    container_name: "promtail"
+    container_name: promtail
     restart: unless-stopped
     volumes:
       - promtail_logs:/var/log
@@ -81,17 +162,16 @@ services:
     command: -config.file=/etc/promtail/config.yml
     networks:
       - microservices-network
+
+  # Grafana
   grafana:
     image: grafana/grafana:latest
-    container_name: "grafana"
+    container_name: grafana
     restart: unless-stopped
-    depends_on:
-      - loki
-      - promtail
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_METRICS_ENABLED=true
     entrypoint:
       - sh
       - -euc
@@ -119,16 +199,26 @@ services:
     user: "472:472"
     networks:
       - microservices-network
+    depends_on:
+      - loki
+      - promtail
 
+  # Prometheus
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
+    networks:
+      - microservices-network
+    depends_on:
+      - redis_exporter
+      - mysqld_exporter
+      - postgres_exporter
+      - mongodb_exporter
+      - rabbitmq_exporter
 
 networks:
   microservices-network:
